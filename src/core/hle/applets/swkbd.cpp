@@ -3,6 +3,7 @@
 // Refer to the license.txt file included.
 
 #include <algorithm>
+#include <array>
 #include <cstring>
 #include <string>
 #include "common/assert.h"
@@ -14,10 +15,79 @@
 #include "core/hle/kernel/shared_memory.h"
 #include "core/hle/result.h"
 #include "core/hle/service/gsp/gsp.h"
+#include "core/hle/service/gsp/gsp_gpu.h"
 #include "core/hle/service/hid/hid.h"
 #include "core/memory.h"
+#include "video_core/utils.h"
 
 namespace HLE::Applets {
+
+namespace {
+
+u32 GetDisplayBufferModePixelSize(Service::APT::DisplayBufferMode mode) {
+    switch (mode) {
+    case Service::APT::DisplayBufferMode::R8G8B8A8:
+    case Service::APT::DisplayBufferMode::R8G8B8:
+        return 3;
+    case Service::APT::DisplayBufferMode::R5G6B5:
+    case Service::APT::DisplayBufferMode::R5G5B5A1:
+    case Service::APT::DisplayBufferMode::R4G4B4A4:
+        return 2;
+    case Service::APT::DisplayBufferMode::Unimportable:
+        return 0;
+    default:
+        UNREACHABLE_MSG("Unknown display buffer mode {}", mode);
+        return 0;
+    }
+}
+
+struct PixelColor {
+    std::array<u8, 3> bytes;
+    u32 bytes_per_pixel;
+};
+
+PixelColor EncodeColor(Service::APT::DisplayBufferMode mode, u8 red, u8 green, u8 blue) {
+    switch (mode) {
+    case Service::APT::DisplayBufferMode::R8G8B8A8:
+    case Service::APT::DisplayBufferMode::R8G8B8:
+        return {{blue, green, red}, 3};
+    case Service::APT::DisplayBufferMode::R5G6B5: {
+        const u16 pixel = static_cast<u16>(((red >> 3) << 11) | ((green >> 2) << 5) | (blue >> 3));
+        return {{{static_cast<u8>(pixel), static_cast<u8>(pixel >> 8), 0}}, 2};
+    }
+    case Service::APT::DisplayBufferMode::R5G5B5A1: {
+        const u16 pixel =
+            static_cast<u16>(((red >> 3) << 11) | ((green >> 3) << 6) | ((blue >> 3) << 1) | 1);
+        return {{{static_cast<u8>(pixel), static_cast<u8>(pixel >> 8), 0}}, 2};
+    }
+    case Service::APT::DisplayBufferMode::R4G4B4A4: {
+        const u16 pixel =
+            static_cast<u16>(((red >> 4) << 12) | ((green >> 4) << 8) | ((blue >> 4) << 4) | 0xF);
+        return {{{static_cast<u8>(pixel), static_cast<u8>(pixel >> 8), 0}}, 2};
+    }
+    default:
+        return {{}, 0};
+    }
+}
+
+void SetPixel(u8* framebuffer, u32 x, u32 y, const PixelColor& color) {
+    const auto offset = VideoCore::GetMortonOffset(x, y, color.bytes_per_pixel) +
+                        (y & ~7) * Service::GSP::FRAMEBUFFER_WIDTH_POW2 * color.bytes_per_pixel;
+    std::memcpy(framebuffer + offset, color.bytes.data(), color.bytes_per_pixel);
+}
+
+void FillRect(u8* framebuffer, u32 left, u32 top, u32 width, u32 height, const PixelColor& color) {
+    const u32 right = std::min(left + width, Service::GSP::FRAMEBUFFER_WIDTH);
+    const u32 bottom = std::min(top + height, Service::GSP::BOTTOM_FRAMEBUFFER_HEIGHT);
+
+    for (u32 y = top; y < bottom; ++y) {
+        for (u32 x = left; x < right; ++x) {
+            SetPixel(framebuffer, x, y, color);
+        }
+    }
+}
+
+} // namespace
 
 Result SoftwareKeyboard::ReceiveParameterImpl(Service::APT::MessageParameter const& parameter) {
     switch (parameter.signal) {
@@ -25,7 +95,6 @@ Result SoftwareKeyboard::ReceiveParameterImpl(Service::APT::MessageParameter con
         // The LibAppJustStarted message contains a buffer with the size of the framebuffer shared
         // memory.
         // Create the SharedMemory that will hold the framebuffer data
-        Service::APT::CaptureBufferInfo capture_info;
         ASSERT(sizeof(capture_info) == parameter.buffer.size());
 
         std::memcpy(&capture_info, parameter.buffer.data(), sizeof(capture_info));
@@ -163,7 +232,55 @@ void SoftwareKeyboard::Update() {
 }
 
 void SoftwareKeyboard::DrawScreenKeyboard() {
-    // TODO(Subv): Draw the HLE keyboard, for now just do nothing
+    if (!framebuffer_memory) {
+        return;
+    }
+
+    const auto bytes_per_pixel = GetDisplayBufferModePixelSize(capture_info.bottom_screen_format);
+    if (bytes_per_pixel == 0) {
+        return;
+    }
+
+    const auto framebuffer_size =
+        Service::GSP::FRAMEBUFFER_WIDTH_POW2 * Service::GSP::BOTTOM_FRAMEBUFFER_HEIGHT *
+        bytes_per_pixel;
+    const auto framebuffer_offset = static_cast<u32>(capture_info.bottom_screen_left_offset);
+    if (framebuffer_offset + framebuffer_size > framebuffer_memory->GetSize()) {
+        return;
+    }
+
+    auto* framebuffer = framebuffer_memory->GetPointer(framebuffer_offset);
+    const auto background = EncodeColor(capture_info.bottom_screen_format, 0xE8, 0xE8, 0xE8);
+    const auto input = EncodeColor(capture_info.bottom_screen_format, 0xFF, 0xFF, 0xFF);
+    const auto key_face = EncodeColor(capture_info.bottom_screen_format, 0xF9, 0xF9, 0xF9);
+    const auto border = EncodeColor(capture_info.bottom_screen_format, 0xC4, 0xC4, 0xC4);
+
+    FillRect(framebuffer, 0, 0, Service::GSP::FRAMEBUFFER_WIDTH, Service::GSP::BOTTOM_FRAMEBUFFER_HEIGHT,
+             background);
+    FillRect(framebuffer, 8, 8, 224, 46, input);
+
+    constexpr u32 key_width = 20;
+    constexpr u32 key_height = 30;
+    constexpr u32 key_gap = 4;
+    constexpr u32 row_left = 8;
+    constexpr std::array<u32, 4> row_tops = {72, 108, 144, 180};
+
+    for (u32 row = 0; row < row_tops.size(); ++row) {
+        const u32 key_count = row == 3 ? 8 : 10;
+        const u32 left = row_left + row * 10;
+        for (u32 key = 0; key < key_count; ++key) {
+            FillRect(framebuffer, left + key * (key_width + key_gap), row_tops[row], key_width,
+                     key_height, key_face);
+            FillRect(framebuffer, left + key * (key_width + key_gap), row_tops[row], key_width, 1,
+                     border);
+            FillRect(framebuffer, left + key * (key_width + key_gap), row_tops[row], 1, key_height,
+                     border);
+        }
+    }
+
+    FillRect(framebuffer, 32, 222, 176, 28, key_face);
+    FillRect(framebuffer, 32, 222, 176, 1, border);
+    FillRect(framebuffer, 32, 222, 1, 28, border);
 }
 
 Result SoftwareKeyboard::Finalize() {

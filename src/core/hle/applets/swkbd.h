@@ -196,6 +196,7 @@ private:
     /// It holds the framebuffer info retrieved by the application with
     /// GSPGPU::ImportDisplayCaptureInfo
     std::shared_ptr<Kernel::SharedMemory> framebuffer_memory;
+    Service::APT::CaptureBufferInfo capture_info{};
 
     /// SharedMemory where the output text will be stored
     std::shared_ptr<Kernel::SharedMemory> text_memory;
