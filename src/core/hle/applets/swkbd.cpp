@@ -20,6 +20,9 @@
 namespace HLE::Applets {
 
 Result SoftwareKeyboard::ReceiveParameterImpl(Service::APT::MessageParameter const& parameter) {
+    LOG_INFO(Applet_SWKBD, "SWKBD ReceiveParameter signal={} buffer_size={}",
+             static_cast<u32>(parameter.signal), parameter.buffer.size());
+
     switch (parameter.signal) {
     case Service::APT::SignalType::Request: {
         // The LibAppJustStarted message contains a buffer with the size of the framebuffer shared
@@ -54,14 +57,21 @@ Result SoftwareKeyboard::ReceiveParameterImpl(Service::APT::MessageParameter con
 
         std::memcpy(&config, parameter.buffer.data(), parameter.buffer.size());
 
+        LOG_INFO(Applet_SWKBD,
+                 "SWKBD callback response result={} return_code={} text_length={} text_offset={}",
+                 static_cast<u32>(config.callback_result), static_cast<u32>(config.return_code),
+                 config.text_length, config.text_offset);
+
         switch (config.callback_result) {
         case SoftwareKeyboardCallbackResult::OK:
             // Finish execution
+            LOG_INFO(Applet_SWKBD, "SWKBD callback accepted, finalizing");
             Finalize();
             return ResultSuccess;
 
         case SoftwareKeyboardCallbackResult::Close:
             // Let the frontend display error and quit
+            LOG_INFO(Applet_SWKBD, "SWKBD callback requested close, finalizing banned input");
             frontend_applet->ShowError(Common::UTF16BufferToUTF8(config.callback_msg));
             config.return_code = SoftwareKeyboardResult::BannedInput;
             config.text_offset = config.text_length = 0;
@@ -71,6 +81,7 @@ Result SoftwareKeyboard::ReceiveParameterImpl(Service::APT::MessageParameter con
         case SoftwareKeyboardCallbackResult::Continue:
             // Let the frontend display error and get input again
             // The input will be sent for validation again on next Update().
+            LOG_INFO(Applet_SWKBD, "SWKBD callback requested continue, reopening frontend");
             frontend_applet->ShowError(Common::UTF16BufferToUTF8(config.callback_msg));
             frontend_applet->Execute(ToFrontendConfig(config));
             return ResultSuccess;
@@ -114,6 +125,12 @@ void SoftwareKeyboard::Update() {
     using namespace Frontend;
     const KeyboardData& data = frontend_applet->ReceiveData();
     std::u16string text = Common::UTF8ToUTF16(data.text);
+
+    LOG_INFO(Applet_SWKBD,
+             "SWKBD frontend data text_size={} button={} num_buttons={} filter_flags={:#x}",
+             text.size(), data.button, static_cast<u32>(config.num_buttons_m1),
+             static_cast<u32>(config.filter_flags));
+
     // Include a null terminator
     std::memcpy(text_memory->GetPointer(), text.c_str(), (text.length() + 1) * sizeof(char16_t));
     switch (config.num_buttons_m1) {
@@ -146,9 +163,23 @@ void SoftwareKeyboard::Update() {
     config.text_length = static_cast<u16>(text.size());
     config.text_offset = 0;
 
-    if (config.filter_flags & HLE::Applets::SoftwareKeyboardFilter::Callback) {
+    const bool is_ok_button = data.button == static_cast<u8>(config.num_buttons_m1);
+    const bool should_validate_callback =
+        is_ok_button &&
+        static_cast<bool>(config.filter_flags & HLE::Applets::SoftwareKeyboardFilter::Callback);
+
+    LOG_INFO(Applet_SWKBD,
+             "SWKBD mapped return_code={} text_length={} text_offset={} callback={} "
+             "is_ok_button={} should_validate_callback={}",
+             static_cast<u32>(config.return_code), config.text_length, config.text_offset,
+             static_cast<bool>(config.filter_flags & HLE::Applets::SoftwareKeyboardFilter::Callback),
+             is_ok_button, should_validate_callback);
+
+    if (should_validate_callback) {
         std::vector<u8> buffer(sizeof(SoftwareKeyboardConfig));
         std::memcpy(buffer.data(), &config, buffer.size());
+
+        LOG_INFO(Applet_SWKBD, "SWKBD sending callback validation message");
 
         // Send the message to invoke callback
         SendParameter({
@@ -158,6 +189,7 @@ void SoftwareKeyboard::Update() {
             .buffer = buffer,
         });
     } else {
+        LOG_INFO(Applet_SWKBD, "SWKBD finalizing directly without callback validation");
         Finalize();
     }
 }
@@ -167,6 +199,11 @@ void SoftwareKeyboard::DrawScreenKeyboard() {
 }
 
 Result SoftwareKeyboard::Finalize() {
+    LOG_INFO(Applet_SWKBD,
+             "SWKBD Finalize return_code={} text_length={} text_offset={} callback_result={}",
+             static_cast<u32>(config.return_code), config.text_length, config.text_offset,
+             static_cast<u32>(config.callback_result));
+
     std::vector<u8> buffer(sizeof(SoftwareKeyboardConfig));
     std::memcpy(buffer.data(), &config, buffer.size());
     CloseApplet(nullptr, buffer);

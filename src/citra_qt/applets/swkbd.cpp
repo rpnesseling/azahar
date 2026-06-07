@@ -57,10 +57,13 @@ QtKeyboardDialog::QtKeyboardDialog(QWidget* parent, QtKeyboard* keyboard_)
     }
     connect(buttons, &QDialogButtonBox::accepted, this, [this] { Submit(); });
     connect(buttons, &QDialogButtonBox::rejected, this, [this] {
+        LOG_INFO(Frontend, "SWKBD Qt dialog rejected, returning cancel_id={}", QtKeyboard::cancel_id);
         button = QtKeyboard::cancel_id;
         accept();
     });
     connect(buttons, &QDialogButtonBox::helpRequested, this, [this] {
+        LOG_INFO(Frontend, "SWKBD Qt dialog help requested, returning forgot_id={}",
+                 QtKeyboard::forgot_id);
         button = QtKeyboard::forgot_id;
         accept();
     });
@@ -71,12 +74,19 @@ QtKeyboardDialog::QtKeyboardDialog(QWidget* parent, QtKeyboard* keyboard_)
 }
 
 void QtKeyboardDialog::Submit() {
+    LOG_INFO(Frontend, "SWKBD Qt dialog submit requested, text_size={}",
+             line_edit->text().size());
+
     auto error = keyboard->ValidateInput(line_edit->text().toStdString());
     if (error != Frontend::ValidationError::None) {
+        LOG_INFO(Frontend, "SWKBD Qt dialog submit validation failed, error={}",
+                 static_cast<u32>(error));
         HandleValidationError(error);
     } else {
         button = keyboard->ok_id;
         text = line_edit->text();
+        LOG_INFO(Frontend, "SWKBD Qt dialog accepted, text_size={} ok_id={}", text.size(),
+                 keyboard->ok_id);
         accept();
     }
 }
@@ -103,7 +113,14 @@ void QtKeyboard::Execute(const Frontend::KeyboardConfig& config) {
     if (this->config.button_config != Frontend::ButtonConfig::None) {
         ok_id = static_cast<u8>(this->config.button_config);
     }
+    LOG_INFO(Frontend,
+             "SWKBD Qt Execute button_config={} ok_id={} cancel_id={} forgot_id={} "
+             "max_text_length={} callback={}",
+             static_cast<u32>(this->config.button_config), ok_id, cancel_id, forgot_id,
+             this->config.max_text_length, this->config.filters.enable_callback);
     QMetaObject::invokeMethod(this, "OpenInputDialog", Qt::BlockingQueuedConnection);
+    LOG_INFO(Frontend, "SWKBD Qt Execute finalizing frontend result text_size={} button={}",
+             result_text.size(), result_button);
     Finalize(result_text, result_button);
 }
 
@@ -114,6 +131,7 @@ void QtKeyboard::ShowError(const std::string& error) {
 }
 
 void QtKeyboard::OpenInputDialog() {
+    LOG_INFO(Frontend, "SWKBD Qt OpenInputDialog starting");
     QtKeyboardDialog dialog(&parent, this);
     dialog.setWindowFlags(dialog.windowFlags() &
                           ~(Qt::WindowCloseButtonHint | Qt::WindowContextHelpButtonHint));
@@ -122,8 +140,8 @@ void QtKeyboard::OpenInputDialog() {
 
     result_text = dialog.text.toStdString();
     result_button = dialog.button;
-    LOG_INFO(Frontend, "SWKBD input dialog finished, text={}, button={}", result_text,
-             result_button);
+    LOG_INFO(Frontend, "SWKBD Qt OpenInputDialog finished, text_size={} button={}",
+             result_text.size(), result_button);
 }
 
 void QtKeyboard::ShowErrorDialog(QString message) {

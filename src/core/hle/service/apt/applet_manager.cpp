@@ -302,8 +302,12 @@ void AppletManager::CancelAndSendParameter(const MessageParameter& parameter) {
 Result AppletManager::SendParameter(const MessageParameter& parameter) {
     // A new parameter can not be sent if the previous one hasn't been consumed yet
     if (next_parameter) {
-        LOG_WARNING(Service_APT, "Parameter from {:03X} to {:03X} blocked by pending parameter.",
-                    parameter.sender_id, parameter.destination_id);
+        LOG_WARNING(Service_APT,
+                    "Parameter from {:03X} to {:03X} signal {:08X} blocked by pending "
+                    "parameter from {:03X} to {:03X} signal {:08X}.",
+                    parameter.sender_id, parameter.destination_id, parameter.signal,
+                    next_parameter->sender_id, next_parameter->destination_id,
+                    next_parameter->signal);
         return {ErrCodes::ParameterPresent, ErrorModule::Applet, ErrorSummary::InvalidState,
                 ErrorLevel::Status};
     }
@@ -337,9 +341,9 @@ ResultVal<MessageParameter> AppletManager::GlanceParameter(AppletId app_id) {
 ResultVal<MessageParameter> AppletManager::ReceiveParameter(AppletId app_id) {
     auto result = GlanceParameter(app_id);
     if (result.Succeeded()) {
-        LOG_DEBUG(Service_APT,
-                  "Received parameter from {:03X} to {:03X} with signal {:08X} and size {:08X}",
-                  result->sender_id, result->destination_id, result->signal, result->buffer.size());
+        LOG_INFO(Service_APT,
+                 "Received parameter from {:03X} to {:03X} with signal {:08X} and size {:08X}",
+                 result->sender_id, result->destination_id, result->signal, result->buffer.size());
 
         // Clear the parameter
         next_parameter = {};
@@ -687,6 +691,11 @@ Result AppletManager::StartLibraryApplet(AppletId applet_id, std::shared_ptr<Ker
 
 Result AppletManager::PrepareToCloseLibraryApplet(bool not_pause, bool exiting, bool jump_home) {
     if (next_parameter) {
+        LOG_WARNING(Service_APT,
+                    "PrepareToCloseLibraryApplet blocked by pending parameter from {:03X} to "
+                    "{:03X} signal {:08X}",
+                    next_parameter->sender_id, next_parameter->destination_id,
+                    next_parameter->signal);
         return {ErrCodes::ParameterPresent, ErrorModule::Applet, ErrorSummary::InvalidState,
                 ErrorLevel::Status};
     }
@@ -699,6 +708,10 @@ Result AppletManager::PrepareToCloseLibraryApplet(bool not_pause, bool exiting, 
         library_applet_closing_command = SignalType::WakeupByCancel;
     else
         library_applet_closing_command = SignalType::WakeupByExit;
+
+    LOG_INFO(Service_APT,
+             "PrepareToCloseLibraryApplet not_pause={} exiting={} jump_home={} closing_signal={}",
+             not_pause, exiting, jump_home, static_cast<u32>(library_applet_closing_command));
 
     return ResultSuccess;
 }
@@ -718,9 +731,14 @@ Result AppletManager::CloseLibraryApplet(std::shared_ptr<Kernel::Object> object,
         .buffer = buffer,
     };
 
+    LOG_INFO(Service_APT,
+             "CloseLibraryApplet from {:03X} to {:03X} signal {:08X} buffer_size={:08X}",
+             param.sender_id, param.destination_id, param.signal, param.buffer.size());
+
     if (library_applet_closing_command != SignalType::WakeupByPause) {
         CancelAndSendParameter(param);
         // TODO: Terminate the running applet title
+        LOG_INFO(Service_APT, "CloseLibraryApplet resetting library applet slot");
         slot->Reset();
     } else {
         SendParameter(param);
