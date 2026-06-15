@@ -124,15 +124,15 @@ void SoftwareKeyboard::Update() {
 
     using namespace Frontend;
     const KeyboardData& data = frontend_applet->ReceiveData();
-    std::u16string text = Common::UTF8ToUTF16(data.text);
+    const bool button_submits_text = data.button < config.button_submits_text.size() &&
+                                     config.button_submits_text[data.button];
 
     LOG_INFO(Applet_SWKBD,
-             "SWKBD frontend data text_size={} button={} num_buttons={} filter_flags={:#x}",
-             text.size(), data.button, static_cast<u32>(config.num_buttons_m1),
-             static_cast<u32>(config.filter_flags));
+             "SWKBD frontend data text_size={} button={} num_buttons={} filter_flags={:#x} "
+             "button_submits_text={}",
+             data.text.size(), data.button, static_cast<u32>(config.num_buttons_m1),
+             static_cast<u32>(config.filter_flags), button_submits_text);
 
-    // Include a null terminator
-    std::memcpy(text_memory->GetPointer(), text.c_str(), (text.length() + 1) * sizeof(char16_t));
     switch (config.num_buttons_m1) {
     case SoftwareKeyboardButtonConfig::SingleButton:
         config.return_code = SoftwareKeyboardResult::D0Click;
@@ -160,20 +160,27 @@ void SoftwareKeyboard::Update() {
         UNREACHABLE();
     }
 
-    config.text_length = static_cast<u16>(text.size());
     config.text_offset = 0;
 
-    const bool is_ok_button = data.button == static_cast<u8>(config.num_buttons_m1);
+    if (button_submits_text) {
+        std::u16string text = Common::UTF8ToUTF16(data.text);
+        // Include a null terminator
+        std::memcpy(text_memory->GetPointer(), text.c_str(),
+                    (text.length() + 1) * sizeof(char16_t));
+        config.text_length = static_cast<u16>(text.size());
+    } else {
+        config.text_length = 0;
+    }
+
     const bool should_validate_callback =
-        is_ok_button &&
-        static_cast<bool>(config.filter_flags & HLE::Applets::SoftwareKeyboardFilter::Callback);
+        (config.filter_flags & HLE::Applets::SoftwareKeyboardFilter::Callback) &&
+        data.button == static_cast<u8>(config.num_buttons_m1) && button_submits_text;
 
     LOG_INFO(Applet_SWKBD,
-             "SWKBD mapped return_code={} text_length={} text_offset={} callback={} "
-             "is_ok_button={} should_validate_callback={}",
+             "SWKBD mapped return_code={} text_length={} text_offset={} callback={} validate_callback={}",
              static_cast<u32>(config.return_code), config.text_length, config.text_offset,
              static_cast<bool>(config.filter_flags & HLE::Applets::SoftwareKeyboardFilter::Callback),
-             is_ok_button, should_validate_callback);
+             should_validate_callback);
 
     if (should_validate_callback) {
         std::vector<u8> buffer(sizeof(SoftwareKeyboardConfig));
@@ -189,7 +196,7 @@ void SoftwareKeyboard::Update() {
             .buffer = buffer,
         });
     } else {
-        LOG_INFO(Applet_SWKBD, "SWKBD finalizing directly without callback validation");
+        LOG_INFO(Applet_SWKBD, "SWKBD no callback requested, finalizing directly");
         Finalize();
     }
 }

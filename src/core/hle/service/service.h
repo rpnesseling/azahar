@@ -191,6 +191,10 @@ private:
 /// Initialize ServiceManager
 void Init(Core::System& system, u64 loading_titleid, std::vector<u64>& lle_modules, bool allow_lle);
 
+/// Temporarily logs service IPC calls after software keyboard closes.
+void ArmPostSwkbdServiceTrace(u32 call_budget);
+bool IsPostSwkbdServiceTraceActive();
+
 struct ServiceModuleInfo {
     std::string name;
     u64 title_id;

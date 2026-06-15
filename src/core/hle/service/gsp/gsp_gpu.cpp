@@ -18,6 +18,7 @@
 #include "core/hle/kernel/shared_page.h"
 #include "core/hle/result.h"
 #include "core/hle/service/gsp/gsp_gpu.h"
+#include "core/hle/service/service.h"
 #include "core/memory.h"
 #include "video_core/gpu.h"
 #include "video_core/gpu_debugger.h"
@@ -575,6 +576,14 @@ void GSP_GPU::TriggerCmdReqQueue(Kernel::HLERequestContext& ctx) {
     auto& gpu = system.GPU();
 
     bool requires_delay = false;
+    const bool trace_post_swkbd = ::Service::IsPostSwkbdServiceTraceActive();
+    u32 request_dma_count = 0;
+    u32 submit_cmd_list_count = 0;
+    u32 memory_fill_count = 0;
+    u32 display_transfer_count = 0;
+    u32 texture_copy_count = 0;
+    u32 cache_flush_count = 0;
+    u32 unknown_count = 0;
 
     while (command_buffer->number_commands) {
         if (command_buffer->should_stop) {
@@ -586,6 +595,31 @@ void GSP_GPU::TriggerCmdReqQueue(Kernel::HLERequestContext& ctx) {
         }
 
         Command command = command_buffer->commands[command_buffer->index];
+        if (trace_post_swkbd) {
+            switch (command.id) {
+            case CommandId::RequestDma:
+                ++request_dma_count;
+                break;
+            case CommandId::SubmitCmdList:
+                ++submit_cmd_list_count;
+                break;
+            case CommandId::MemoryFill:
+                ++memory_fill_count;
+                break;
+            case CommandId::DisplayTransfer:
+                ++display_transfer_count;
+                break;
+            case CommandId::TextureCopy:
+                ++texture_copy_count;
+                break;
+            case CommandId::CacheFlush:
+                ++cache_flush_count;
+                break;
+            default:
+                ++unknown_count;
+                break;
+            }
+        }
         if (command.id == CommandId::SubmitCmdList && !requires_delay &&
             Settings::values.delay_game_render_thread_us.GetValue() != 0) {
             requires_delay = true;
@@ -605,6 +639,14 @@ void GSP_GPU::TriggerCmdReqQueue(Kernel::HLERequestContext& ctx) {
         if (command.stop) {
             command_buffer->status.Assign(CommandBuffer::STATUS_STOPPED);
         }
+    }
+
+    if (trace_post_swkbd) {
+        LOG_INFO(Service_GSP,
+                 "POST_SWKBD GSP commands dma={} submit={} fill={} display={} texture={} "
+                 "cache_flush={} unknown={} requires_delay={}",
+                 request_dma_count, submit_cmd_list_count, memory_fill_count, display_transfer_count,
+                 texture_copy_count, cache_flush_count, unknown_count, requires_delay);
     }
 
     if (requires_delay) {

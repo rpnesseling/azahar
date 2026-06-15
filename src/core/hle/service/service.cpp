@@ -3,6 +3,7 @@
 // Refer to the license.txt file included.
 
 #include <algorithm>
+#include <atomic>
 #include <fmt/format.h>
 #include "common/assert.h"
 #include "common/hacks/hack_manager.h"
@@ -58,6 +59,17 @@
 #include "core/loader/loader.h"
 
 namespace Service {
+
+static std::atomic<u32> post_swkbd_service_trace_budget{0};
+
+void ArmPostSwkbdServiceTrace(u32 call_budget) {
+    post_swkbd_service_trace_budget.store(call_budget, std::memory_order_relaxed);
+    LOG_INFO(Service, "POST_SWKBD armed service trace for {} calls", call_budget);
+}
+
+bool IsPostSwkbdServiceTraceActive() {
+    return post_swkbd_service_trace_budget.load(std::memory_order_relaxed) > 0;
+}
 
 const std::array<ServiceModuleInfo, 41> service_module_map{
     {{"FS", 0x00040130'00001102, FS::InstallInterfaces, false},
@@ -178,6 +190,15 @@ void ServiceFrameworkBase::ReportUnimplementedFunction(u32* cmd_buf, const Funct
 void ServiceFrameworkBase::HandleSyncRequest(Kernel::HLERequestContext& context) {
     auto itr = handlers.find(context.CommandHeader().command_id.Value());
     const FunctionInfoBase* info = itr == handlers.end() ? nullptr : &itr->second;
+    if (const u32 remaining =
+            post_swkbd_service_trace_budget.fetch_sub(1, std::memory_order_relaxed);
+        remaining > 0) {
+        LOG_INFO(Service, "POST_SWKBD call remaining={} port='{}' cmd={:#06x} name='{}'",
+                 remaining, GetServiceName(), context.CommandHeader().command_id.Value(),
+                 info == nullptr ? "<unknown>" : info->name);
+    } else if (remaining == 0) {
+        post_swkbd_service_trace_budget.store(0, std::memory_order_relaxed);
+    }
     if (info == nullptr || !info->implemented) {
         context.ReportUnimplemented();
         return ReportUnimplementedFunction(context.CommandBuffer(), info);

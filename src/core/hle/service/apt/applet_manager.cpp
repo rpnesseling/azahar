@@ -18,6 +18,7 @@
 #include "core/hle/service/apt/ns.h"
 #include "core/hle/service/cfg/cfg.h"
 #include "core/hle/service/gsp/gsp_gpu.h"
+#include "core/hle/service/service.h"
 #include "video_core/utils.h"
 
 SERVICE_CONSTRUCT_IMPL(Service::APT::AppletManager)
@@ -254,9 +255,12 @@ AppletManager::AppletSlot AppletManager::GetAppletSlotFromPos(AppletPos pos) {
 }
 
 void AppletManager::CancelAndSendParameter(const MessageParameter& parameter) {
-    LOG_DEBUG(
-        Service_APT, "Sending parameter from {:03X} to {:03X} with signal {:08X} and size {:08X}",
-        parameter.sender_id, parameter.destination_id, parameter.signal, parameter.buffer.size());
+    LOG_INFO(Service_APT,
+             "CancelAndSendParameter from {:03X} to {:03X} signal {:08X} size {:08X} "
+             "has_pending={} hle_destination={}",
+             parameter.sender_id, parameter.destination_id, parameter.signal,
+             parameter.buffer.size(), static_cast<bool>(next_parameter),
+             hle_applets[parameter.destination_id] != nullptr);
 
     // If the applet is being HLEd, send directly to the applet.
     const auto applet = hle_applets[parameter.destination_id];
@@ -394,8 +398,8 @@ ResultVal<AppletManager::InitializeResult> AppletManager::Initialize(AppletId ap
                       ErrorSummary::InvalidState, ErrorLevel::Status);
     }
 
-    LOG_DEBUG(Service_APT, "Initializing applet with ID {:03X} and attributes {:08X}.", app_id,
-              attributes.raw);
+    LOG_INFO(Service_APT, "Initializing applet id={:03X} slot={} attributes={:08X}", app_id,
+             static_cast<u32>(slot), attributes.raw);
     slot_data->applet_id = static_cast<AppletId>(app_id);
     // Note: In the real console the title id of a given applet slot is set by the APT module when
     // calling StartApplication.
@@ -462,11 +466,14 @@ Result AppletManager::Enable(AppletAttributes attributes) {
 Result AppletManager::Finalize(AppletId app_id) {
     auto slot = GetAppletSlotFromId(app_id);
     if (slot == AppletSlot::Error) {
+        LOG_WARNING(Service_APT, "Finalize requested for unknown applet id={:03X}", app_id);
         return {ErrorDescription::NotFound, ErrorModule::Applet, ErrorSummary::NotFound,
                 ErrorLevel::Status};
     }
 
     auto slot_data = GetAppletSlot(slot);
+    LOG_INFO(Service_APT, "Finalizing applet id={:03X} slot={} registered={} active_slot={}",
+             app_id, static_cast<u32>(slot), slot_data->registered, static_cast<u32>(active_slot));
     slot_data->Reset();
 
     auto inactive = active_slot == AppletSlot::Error;
@@ -594,14 +601,30 @@ Result AppletManager::CreateHLEApplet(AppletId id, AppletId parent, bool preload
 }
 
 Result AppletManager::PrepareToStartLibraryApplet(AppletId applet_id) {
+    LOG_INFO(Service_APT,
+             "PrepareToStartLibraryApplet applet_id={:03X} active_slot={} last_launcher={} "
+             "library_registered={} pending={} lle_applets={}",
+             applet_id, static_cast<u32>(active_slot), static_cast<u32>(last_library_launcher_slot),
+             GetAppletSlot(AppletSlot::LibraryApplet)->registered, static_cast<bool>(next_parameter),
+             Settings::values.lle_applets.GetValue());
+
     // The real APT service returns an error if there's a pending APT parameter when this function
     // is called.
     if (next_parameter) {
+        LOG_WARNING(Service_APT,
+                    "PrepareToStartLibraryApplet blocked by pending parameter from {:03X} to "
+                    "{:03X} signal {:08X}",
+                    next_parameter->sender_id, next_parameter->destination_id,
+                    next_parameter->signal);
         return {ErrCodes::ParameterPresent, ErrorModule::Applet, ErrorSummary::InvalidState,
                 ErrorLevel::Status};
     }
 
     if (GetAppletSlot(AppletSlot::LibraryApplet)->registered) {
+        LOG_WARNING(Service_APT,
+                    "PrepareToStartLibraryApplet blocked because library slot is already "
+                    "registered as {:03X}",
+                    GetAppletSlot(AppletSlot::LibraryApplet)->applet_id);
         return {ErrorDescription::AlreadyExists, ErrorModule::Applet, ErrorSummary::InvalidState,
                 ErrorLevel::Status};
     }
@@ -618,8 +641,14 @@ Result AppletManager::PrepareToStartLibraryApplet(AppletId applet_id) {
             NS::LaunchTitle(system, FS::MediaType::NAND,
                             GetTitleIdForApplet(applet_id, cfg->GetRegionValue(is_setup)));
         if (process) {
+            LOG_INFO(Service_APT, "PrepareToStartLibraryApplet launched LLE applet {:03X}",
+                     applet_id);
             return ResultSuccess;
         }
+        LOG_WARNING(Service_APT,
+                    "PrepareToStartLibraryApplet failed to launch LLE applet {:03X}; falling "
+                    "back to HLE if available",
+                    applet_id);
     }
 
     // If we weren't able to load the native applet title, try to fallback to an HLE implementation.
@@ -672,6 +701,12 @@ Result AppletManager::FinishPreloadingLibraryApplet(AppletId applet_id) {
 
 Result AppletManager::StartLibraryApplet(AppletId applet_id, std::shared_ptr<Kernel::Object> object,
                                          const std::vector<u8>& buffer) {
+    LOG_INFO(Service_APT,
+             "StartLibraryApplet applet_id={:03X} launcher_slot={} active_slot={} "
+             "buffer_size={:08X} has_object={}",
+             applet_id, static_cast<u32>(last_library_launcher_slot), static_cast<u32>(active_slot),
+             buffer.size(), object != nullptr);
+
     active_slot = AppletSlot::LibraryApplet;
 
     auto send_res = SendParameter({
@@ -682,10 +717,12 @@ Result AppletManager::StartLibraryApplet(AppletId applet_id, std::shared_ptr<Ker
         .buffer = buffer,
     });
     if (send_res.IsError()) {
+        LOG_WARNING(Service_APT, "StartLibraryApplet send failed for applet_id={:03X}", applet_id);
         active_slot = last_library_launcher_slot;
         return send_res;
     }
 
+    LOG_INFO(Service_APT, "StartLibraryApplet sent wakeup to applet_id={:03X}", applet_id);
     return ResultSuccess;
 }
 
@@ -737,6 +774,10 @@ Result AppletManager::CloseLibraryApplet(std::shared_ptr<Kernel::Object> object,
 
     if (library_applet_closing_command != SignalType::WakeupByPause) {
         CancelAndSendParameter(param);
+        if (slot->applet_id == AppletId::SoftwareKeyboard1 ||
+            slot->applet_id == AppletId::SoftwareKeyboard2) {
+            ::Service::ArmPostSwkbdServiceTrace(400);
+        }
         // TODO: Terminate the running applet title
         LOG_INFO(Service_APT, "CloseLibraryApplet resetting library applet slot");
         slot->Reset();

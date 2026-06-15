@@ -126,6 +126,16 @@ void RasterizerCache<T>::RunGarbageCollector() {
 }
 
 template <class T>
+void RasterizerCache<T>::LogDiagnosticStats(std::string_view label) const {
+    LOG_INFO(Render_OpenGL,
+             "POST_SWKBD {} cache surfaces={} framebuffers={} samplers={} sentenced={} "
+             "texture_cubes={} dirty_regions={} cached_pages={} frame_tick={}",
+             label, slot_surfaces.size(), slot_framebuffers.size(), slot_samplers.size(),
+             sentenced.size(), texture_cube_cache.size(), dirty_regions.iterative_size(),
+             cached_pages.iterative_size(), frame_tick);
+}
+
+template <class T>
 void RasterizerCache<T>::RemoveFramebuffers(SurfaceId surface_id) {
     for (auto it = framebuffers.begin(); it != framebuffers.end();) {
         const auto& params = it->first;

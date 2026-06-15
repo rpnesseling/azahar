@@ -9,6 +9,7 @@
 #include "common/math_util.h"
 #include "common/microprofile.h"
 #include "core/loader/loader.h"
+#include "core/hle/service/service.h"
 #include "video_core/pica/pica_core.h"
 #include "video_core/renderer_opengl/gl_rasterizer.h"
 #include "video_core/renderer_opengl/pica_to_gl.h"
@@ -170,6 +171,9 @@ RasterizerOpenGL::~RasterizerOpenGL() = default;
 
 void RasterizerOpenGL::TickFrame() {
     res_cache.TickFrame();
+    if (::Service::IsPostSwkbdServiceTraceActive()) {
+        res_cache.LogDiagnosticStats("OpenGL");
+    }
 }
 
 void RasterizerOpenGL::LoadDefaultDiskResources(

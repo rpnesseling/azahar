@@ -8,6 +8,7 @@
 #include <list>
 #include <optional>
 #include <span>
+#include <string_view>
 #include <unordered_map>
 #include <vector>
 #include <boost/icl/interval_map.hpp>
@@ -137,6 +138,9 @@ public:
 
     /// Clear all cached resources tracked by this cache manager
     void ClearAll(bool flush);
+
+    /// Logs cache container sizes for diagnostics.
+    void LogDiagnosticStats(std::string_view label) const;
 
 private:
     /// Iterate over all page indices in a range
